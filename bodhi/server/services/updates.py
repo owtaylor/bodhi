@@ -25,6 +25,7 @@ from cornice import Service
 from cornice.validators import colander_body_validator, colander_querystring_validator
 from sqlalchemy import func, distinct
 from sqlalchemy.sql import or_
+from requests import RequestException
 
 from bodhi.server import log, security
 from bodhi.server.exceptions import BodhiException, LockedUpdateException
@@ -91,6 +92,14 @@ update_waive_test_results = Service(
     description='Waive test results that block transitioning the update to next state',
     factory=security.PackagerACLFactory,
     cors_origins=bodhi.server.security.cors_origins_rw
+)
+
+update_get_test_results = Service(
+    name='update_get_test_results',
+    path='/updates/{id}/get-test-results',
+    description='Get test results for a specified update',
+    factory=security.PackagerACLFactory,
+    cors_origins=bodhi.server.security.cors_origins_ro,
 )
 
 
@@ -583,3 +592,36 @@ def waive_test_results(request):
         request.errors.add('body', 'request', str(e))
 
     return dict(update=update)
+
+
+@update_get_test_results.get(schema=bodhi.server.schemas.GetTestResultsSchema,
+                             validators=(validate_update_id,
+                                         validate_acls),
+                             permission='read', renderer='json',
+                             error_handler=bodhi.server.services.errors.json_handler)
+def get_test_results(request):
+    """
+    Get the test results on a given update when gating is on.
+
+    Args:
+        request (pyramid.request): The current request.
+    Returns:
+        dict: A dictionary mapping the key "update" to the update.
+    """
+    update = request.validated['update']
+
+    decision = None
+    try:
+        decision = update.get_test_gating_info()
+    except RequestException as e:
+        log.exception("Error querying greenwave for test results")
+        request.errors.add('body', 'request', str(e))
+    except BodhiException as e:
+        log.exception("Failed to query greenwave for test results")
+        request.errors.add('body', 'request', str(e))
+    except Exception as e:
+        log.exception("Unhandled exception in get_test_results")
+        request.errors.add('body', 'request', str(e))
+        request.errors.status = 500
+
+    return dict(decision=decision)
